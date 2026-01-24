@@ -1,7 +1,6 @@
-# Secure Network Tunnel with mutual TLS (mTLS)
+## Secure Network Tunnel with mutual TLS (mTLS)
 
 A minimal, secure TCP tunnel written in C using OpenSSL, implementing mutual TLS (mTLS) for Zero Trust networking.
-
 
 ## Features
 
@@ -9,99 +8,89 @@ A minimal, secure TCP tunnel written in C using OpenSSL, implementing mutual TLS
 - Mutual authentication (both client and server must present valid X.509 certificates)
 - No application changes required — works as a transparent proxy
 - Written in pure C with no external dependencies (except OpenSSL)
-- Graceful connection handling with select()-based I/O
-- Memory-safe (no leaks — verified with Valgrind)
 
-## Quick Start
+Build the project: make
 
-1. Generate certificates:
-   ./scripts/gen-certs.sh
+Run a target service (e.g., netcat): nc -l 5432
 
-2. Build the project:
-   make
+Start the tunnel server: ./tunnel-server
+Start the tunnel client: ./tunnel-client
+Connect your app to localhost:8080: echo "Hello" | nc localhost 8080
 
-3. Run a target service (e.g., netcat):
-   nc -l 5432
+You should see "Hello" appear in the nc -l 5432 terminal.
 
-4. Start the tunnel server:
-   ./tunnel-server
 
-5. Start the tunnel client:
-   ./tunnel-client
-
-6. Connect your app to localhost:8080:
-   echo "Hello" | nc localhost 8080
-
-→ You should see "Hello" appear in the nc -l 5432 terminal.
 
 ## Architecture
 
-[Application] → localhost:8080
-                ↓
-          [tunnel-client]
-                ↓ (mTLS over port 8443)
-          [tunnel-server]
-                ↓
-        [Target Service: 127.0.0.1:5432]
- 
+[Application ] -> localhost:8080 -> [tunnel-client] - (mTLS over port 8443) - [tunnel-server] -> [Target Service: 127.0.0.1:5432]
+
+
+
 ## Security
+Encryption: TLS 1.3 (AES-GCM / ChaCha20)
+Authentication: Both sides verify certificates signed by a private CA
+Zero Trust: Every connection requires a valid certificate
+No secrets in source code
+Uses SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT
+Socket-level timeouts prevent Slowloris-style DoS attacks
+Certificate verification callback for extensibility
 
-- Encryption: TLS 1.3 (AES-GCM / ChaCha20)
-- Authentication: Both sides verify certificates signed by a private CA
-- Zero Trust: Every connection requires a valid certificate
-- No secrets in source code
-- Uses SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT
+## WARNING: Never commit .key files!!! They are excluded via .gitignore.
 
-> WARNING: Never commit .key files! They are excluded via .gitignore.
+## Use Cases
+Secure database access (PostgreSQL, MySQL)
+mTLS between microservices
+Add encryption to legacy apps without code changes
+Secure internal tunnels without public exposure
+Educational tool for learning TLS, sockets, and C systems programming
 
-## Project Structure
+## Testing
+Basic functionality
 
-.
-├── src/
-│   ├── tls-server.c    # tunnel server
-│   └── tls-client.c    # tunnel client
-├── scripts/
-│   └── gen-certs.sh    # certificate generator
-├── Makefile
-├── README.md
-└── .gitignore
+# Terminal 1
+nc -l 5432
 
-## Use Cases  
-                    
-- Secure database access (PostgreSQL, MySQL)
-- mTLS between microservices
-- Add encryption to legacy apps
-- Secure internal tunnels without public exposure
+# Terminal 2
+./tunnel-server
 
-## Testing  
+# Terminal 3
+./tunnel-client
 
-Terminal 1: nc -l 5432   
-Terminal 2: ./tunnel-server  
-Terminal 3: ./tunnel-client     
-Terminal 4: echo "test" | nc localhost 8080  
+# Terminal 4
 
 Result: "test" appears in Terminal 1.
 
-To test mTLS enforcement: 
-  openssl s_client -connect localhost:8443 -CAfile ca.pem
-  → Should FAIL ("certificate required")
+## mTLS enforcement test
+# Should FAIL ("certificate required")
+openssl s_client -connect localhost:8443 -CAfile ca.pem
 
-  openssl s_client -connect localhost:8443 -CAfile ca.pem -cert client.pem -key client.key
-  → Should SUCCEED
+# Should SUCCEED
+openssl s_client -connect localhost:8443 -CAfile ca.pem -cert client.pem -key client.key
 
-## Customizaton
+## Timeout test
 
+nc localhost 8443  # wait 30+ seconds -> connection closes automatically
+Customization
 Edit these in source files:
 
-In tls-server.c:
-  #define TARGET_PORT 5432
+In src/tls-server.c:
+#define TARGET_PORT 5432
+In src/tls-client.c:
+#define LOCAL_LISTEN_PORT 8080
 
-In tls-client.c:
-  #define LOCAL_LISTEN_PORT 8080
+Then rebuild:
+Future versions may support CLI arguments (--port, --host) for greater flexibility.
 
-Then rebuild: 
-  make clean && make
-        
+## Known Limitations!
+This is an educational project. In production environments, consider:
+
+Adding hostname/IP verification in certificates (via X509_VERIFY_PARAM)
+Implementing full resource cleanup with goto cleanup pattern
+Replacing hardcoded values with command-line arguments
+Using non-blocking I/O or threading for high concurrency
+Large data transfers (>500 KB) may be truncated if the client closes the connection before all data is forwarded (due to TCP half-close behavior)
+
 ## License
-
-For educational and demonstration purposes only.  
+For educational and demonstration purposes only.
+Not intended for production use without further security hardening.

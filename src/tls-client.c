@@ -1,4 +1,3 @@
-// src/tls-client.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,18 +5,54 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/time.h>
 #include <sys/select.h>
+#include <openssl/opensslv.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <errno.h>
 
-#define LOCAL_LISTEN_PORT 8080
+#define LOCAL_PORT 8080
 #define SERVER_HOST "127.0.0.1"
 #define SERVER_PORT 8443
 
+// Надёжная запись всех байтов в обычный сокет
+ssize_t write_all(int fd, const void *buf, size_t count) {
+    size_t written = 0;
+    while (written < count) {
+        ssize_t n = write(fd, (const char*)buf + written, count - written);
+        if (n <= 0) {
+            if (errno == EINTR) continue; // прервано сигналом — повторить
+            return -1; // ошибка
+        }
+        written += n;
+    }
+    return written;
+}
+
+// Надёжная запись всех байтов через SSL
+int ssl_write_all(SSL *ssl, const void *buf, int len) {
+    int sent = 0;
+    while (sent < len) {
+        int n = SSL_write(ssl, (const char*)buf + sent, len - sent);
+        if (n <= 0) {
+            int err = SSL_get_error(ssl, n);
+            if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+                // Блокирующий режим — должно быть редко, но можно ждать
+                continue;
+            }
+            return -1; // ошибка
+        }
+        sent += n;
+    }
+    return sent;
+}
+
 void init_openssl() {
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
     SSL_load_error_strings();
     OpenSSL_add_ssl_algorithms();
+#endif
 }
 
 SSL_CTX* create_context() {
@@ -78,30 +113,30 @@ int connect_to_server() {
     return sock;
 }
 
-void forward_data(int local_fd, int server_fd, SSL *ssl) {
+void forward_data(int local_client_fd, int server_fd, SSL *ssl) {
     char buffer[4096];
     fd_set readfds;
-    int max_fd = (local_fd > server_fd ? local_fd : server_fd) + 1;
+    int max_fd = (local_client_fd > server_fd ? local_client_fd : server_fd) + 1;
 
     while (1) {
         FD_ZERO(&readfds);
-        FD_SET(local_fd, &readfds);
+        FD_SET(local_client_fd, &readfds);
         FD_SET(server_fd, &readfds);
 
         if (select(max_fd, &readfds, NULL, NULL, NULL) < 0) {
             break;
         }
 
-        if (FD_ISSET(local_fd, &readfds)) {
-            int bytes = read(local_fd, buffer, sizeof(buffer));
+        if (FD_ISSET(local_client_fd, &readfds)) {
+            int bytes = read(local_client_fd, buffer, sizeof(buffer));
             if (bytes <= 0) break;
-            if (SSL_write(ssl, buffer, bytes) != bytes) break;
+            if (ssl_write_all(ssl, buffer, bytes) != bytes) break;
         }
 
         if (FD_ISSET(server_fd, &readfds)) {
             int bytes = SSL_read(ssl, buffer, sizeof(buffer));
             if (bytes <= 0) break;
-            if (write(local_fd, buffer, bytes) != bytes) break;
+            if (write_all(local_client_fd, buffer, bytes) != (ssize_t)bytes) break;
         }
     }
 }
@@ -122,8 +157,8 @@ int main() {
 
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(LOCAL_LISTEN_PORT);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(LOCAL_PORT); // например, 8080
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // только localhost
 
     if (bind(listen_sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         perror("bind");
@@ -137,7 +172,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    printf("Tunnel client listening on localhost:%d\n", LOCAL_LISTEN_PORT);
+    printf("Tunnel client listening on localhost:%d\n", LOCAL_PORT);
     printf("Forwarding to %s:%d\n", SERVER_HOST, SERVER_PORT);
 
     while (1) {
@@ -151,11 +186,21 @@ int main() {
 
         printf("Local client connected: %s\n", inet_ntoa(client_addr.sin_addr));
 
+        // Установка тайм-аутов на локальный сокет (приложение → клиент)
+        struct timeval timeout = { .tv_sec = 30, .tv_usec = 0 };
+        setsockopt(local_client_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(local_client_sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+        // Подключаемся к серверу туннеля
         int server_sock = connect_to_server();
         if (server_sock < 0) {
             close(local_client_sock);
             continue;
         }
+
+        // Установка тайм-аутов на сокет к серверу
+        setsockopt(server_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(server_sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 
         SSL *ssl = SSL_new(ctx);
         SSL_set_fd(ssl, server_sock);
@@ -180,6 +225,8 @@ int main() {
 
     SSL_CTX_free(ctx);
     close(listen_sock);
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
     EVP_cleanup();
+#endif
     return 0;
 }

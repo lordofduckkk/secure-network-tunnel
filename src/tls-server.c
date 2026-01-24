@@ -6,7 +6,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/time.h>
 #include <sys/select.h>
+#include <openssl/opensslv.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <errno.h>
@@ -15,9 +17,46 @@
 #define TARGET_HOST "127.0.0.1"
 #define TARGET_PORT 5432  // Пример: PostgreSQL
 
+// Certificate verification callback
+int verify_callback(int preverify_ok, X509_STORE_CTX *ctx);
+
+// Надёжная запись всех байтов в обычный сокет
+ssize_t write_all(int fd, const void *buf, size_t count) {
+    size_t written = 0;
+    while (written < count) {
+        ssize_t n = write(fd, (const char*)buf + written, count - written);
+        if (n <= 0) {
+            if (errno == EINTR) continue; // прервано сигналом — повторить
+            return -1; // ошибка
+        }
+        written += n;
+    }
+    return written;
+}
+
+// Надёжная запись всех байтов через SSL
+int ssl_write_all(SSL *ssl, const void *buf, int len) {
+    int sent = 0;
+    while (sent < len) {
+        int n = SSL_write(ssl, (const char*)buf + sent, len - sent);
+        if (n <= 0) {
+            int err = SSL_get_error(ssl, n);
+            if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+                // Блокирующий режим — должно быть редко, но можно ждать
+                continue;
+            }
+            return -1; // ошибка
+        }
+        sent += n;
+    }
+    return sent;
+}
+
 void init_openssl() {
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
     SSL_load_error_strings();
     OpenSSL_add_ssl_algorithms();
+#endif
 }
 
 SSL_CTX* create_context() {
@@ -48,7 +87,7 @@ void configure_context(SSL_CTX *ctx) {
     }
 
     //Включаем mTLS
-    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, verify_callback);
     SSL_CTX_load_verify_locations(ctx, "ca.pem", NULL);
 }
 
@@ -77,6 +116,15 @@ int connect_to_target() {
     return sock;
 }
 
+int verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
+    if (!preverify_ok) {
+        int err = X509_STORE_CTX_get_error(ctx);
+        fprintf(stderr, "Certificate verification error: %d\n", err);
+        return 0;
+    }
+    return 1;
+}
+
 void forward_data(int client_fd, int target_fd, SSL *ssl) {
     char buffer[4096];
     fd_set readfds;
@@ -94,13 +142,13 @@ void forward_data(int client_fd, int target_fd, SSL *ssl) {
         if (FD_ISSET(client_fd, &readfds)) {
             int bytes = SSL_read(ssl, buffer, sizeof(buffer));
             if (bytes <= 0) break;
-            if (write(target_fd, buffer, bytes) != bytes) break;
+            if (write_all(target_fd, buffer, bytes) != (ssize_t)bytes) break;
         }
 
         if (FD_ISSET(target_fd, &readfds)) {
             int bytes = read(target_fd, buffer, sizeof(buffer));
             if (bytes <= 0) break;
-            if (SSL_write(ssl, buffer, bytes) != bytes) break;
+            if (ssl_write_all(ssl, buffer, bytes) != bytes) break;
         }
     }
 }
@@ -150,6 +198,11 @@ int main() {
 
         printf("Client connected: %s\n", inet_ntoa(client_addr.sin_addr));
 
+        // Установка тайм-аутов на клиентский сокет
+        struct timeval timeout = { .tv_sec = 30, .tv_usec = 0 };
+        setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(client_sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
         SSL *ssl = SSL_new(ctx);
         SSL_set_fd(ssl, client_sock);
 
@@ -160,12 +213,17 @@ int main() {
             continue;
         }
 
+        // Подключаемся к целевому сервису ТОЛЬКО после успешного mTLS
         int target_sock = connect_to_target();
         if (target_sock < 0) {
             SSL_free(ssl);
             close(client_sock);
             continue;
         }
+
+        // Установка тайм-аутов на целевой сокет
+        setsockopt(target_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(target_sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 
         printf("Connected to target %s:%d\n", TARGET_HOST, TARGET_PORT);
         forward_data(client_sock, target_sock, ssl);
@@ -179,6 +237,8 @@ int main() {
 
     SSL_CTX_free(ctx);
     close(listen_sock);
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
     EVP_cleanup();
+#endif
     return 0;
 }
