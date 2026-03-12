@@ -26,7 +26,7 @@ ssize_t write_all(int fd, const void *buf, size_t count) {
     while (written < count) {
         ssize_t n = write(fd, (const char*)buf + written, count - written);
         if (n <= 0) {
-            if (errno == EINTR) continue; // прервано сигналом — повторить
+            if (errno == EINTR) continue; // прервано сигналом - повторить
             return -1; // ошибка
         }
         written += n;
@@ -34,7 +34,7 @@ ssize_t write_all(int fd, const void *buf, size_t count) {
     return written;
 }
 
-// Надёжная запись всех байтов через SSL
+// Надёжная запись всех байтов через 
 int ssl_write_all(SSL *ssl, const void *buf, int len) {
     int sent = 0;
     while (sent < len) {
