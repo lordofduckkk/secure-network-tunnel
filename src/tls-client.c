@@ -12,9 +12,12 @@
 #include <openssl/err.h>
 #include <errno.h>
 
+
+
 #define LOCAL_PORT 8080
 #define SERVER_HOST "127.0.0.1"
 #define SERVER_PORT 8443
+
 
 // Надёжная запись всех байтов в обычный сокет
 ssize_t write_all(int fd, const void *buf, size_t count) {
@@ -27,28 +30,35 @@ ssize_t write_all(int fd, const void *buf, size_t count) {
         }
         written += n;
     }
+    
     return written;
 }
 
+
+
+
 // Надёжная запись всех байтов 
-int ssl_write_all(SSL *ssl, const void *buf, int len) {
+int ssl_write_all(SSL *ssl, const void *buf, int len){
     int sent = 0;
-    while (sent < len) {
+    while (sent < len){
         int n = SSL_write(ssl, (const char*)buf + sent, len - sent);
         if (n <= 0) {
             int err = SSL_get_error(ssl, n);
-            if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)  {
                 // Блокирующий режим должно быть редко, но можно ждать
                 continue;
+                
             }
             return -1; // ошибка
         }
+        
         sent += n;
     }
     return sent;
 }
 
 void init_openssl() {
+    //смотрим версию
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     SSL_load_error_strings();
     OpenSSL_add_ssl_algorithms();
@@ -75,17 +85,16 @@ void configure_context(SSL_CTX *ctx) {
         ERR_print_errors_fp(stderr);
         exit(EXIT_FAILURE);
     }
-
     // Загружаем клиентский сертификат и ключ
     if (SSL_CTX_use_certificate_file(ctx, "client.pem", SSL_FILETYPE_PEM) <= 0) {
         ERR_print_errors_fp(stderr);
         exit(EXIT_FAILURE);
     }
-
     if (SSL_CTX_use_PrivateKey_file(ctx, "client.key", SSL_FILETYPE_PEM) <= 0) {
         ERR_print_errors_fp(stderr);
         exit(EXIT_FAILURE);
     }
+    
 }
 
 int connect_to_server() {
@@ -103,13 +112,11 @@ int connect_to_server() {
         close(sock);
         return -1;
     }
-
     if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         perror("connect to server");
         close(sock);
         return -1;
     }
-
     return sock;
 }
 
@@ -186,6 +193,7 @@ int main() {
 
         printf("Local client connected: %s\n", inet_ntoa(client_addr.sin_addr));
 
+        
         // Установка тайм-аутов на локальный сокет, приложение - клиент
         struct timeval timeout = { .tv_sec = 30, .tv_usec = 0 };
         setsockopt(local_client_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
@@ -205,6 +213,7 @@ int main() {
         SSL *ssl = SSL_new(ctx);
         SSL_set_fd(ssl, server_sock);
 
+        
         if (SSL_connect(ssl) <= 0) {
             ERR_print_errors_fp(stderr);
             SSL_free(ssl);
@@ -225,6 +234,7 @@ int main() {
 
     SSL_CTX_free(ctx);
     close(listen_sock);
+    //ВАЖНО смотрим версию
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     EVP_cleanup();
 #endif
