@@ -22,7 +22,7 @@ ssize_t write_all(int fd, const void *buf, size_t count) {
     while (written < count) {
         ssize_t n = write(fd, (const char*)buf + written, count - written);
         if (n <= 0) {
-            if (errno == EINTR) continue; // прервано сигналом — повторить
+            if (errno == EINTR) continue; // прервано сигналом - повторить
             return -1; // ошибка
         }
         written += n;
@@ -30,7 +30,7 @@ ssize_t write_all(int fd, const void *buf, size_t count) {
     return written;
 }
 
-// Надёжная запись всех байтов через SSL
+// Надёжная запись всех байтов 
 int ssl_write_all(SSL *ssl, const void *buf, int len) {
     int sent = 0;
     while (sent < len) {
@@ -38,7 +38,7 @@ int ssl_write_all(SSL *ssl, const void *buf, int len) {
         if (n <= 0) {
             int err = SSL_get_error(ssl, n);
             if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-                // Блокирующий режим — должно быть редко, но можно ждать
+                // Блокирующий режим должно быть редко, но можно ждать
                 continue;
             }
             return -1; // ошибка
@@ -157,7 +157,7 @@ int main() {
 
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(LOCAL_PORT); // например, 8080
+    addr.sin_port = htons(LOCAL_PORT); 
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // только localhost
 
     if (bind(listen_sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
@@ -186,7 +186,7 @@ int main() {
 
         printf("Local client connected: %s\n", inet_ntoa(client_addr.sin_addr));
 
-        // Установка тайм-аутов на локальный сокет (приложение → клиент)
+        // Установка тайм-аутов на локальный сокет, приложение - клиент
         struct timeval timeout = { .tv_sec = 30, .tv_usec = 0 };
         setsockopt(local_client_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
         setsockopt(local_client_sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
